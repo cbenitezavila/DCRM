@@ -9,5 +9,5 @@ Project: Decolonialization of critical raw materials
 [data_base_overview](data_base_overview.xlsx) Overview of the data sources
 [dcrm_exploration](dcrm_exploration.ipynb) Exploration of mine data, polygons etc
 [mine][mine.py] Class for the calculation of the footprints
-
+[footprint][footprint.ipynb] Script for calculating the overlaps per mine wit indig area.
 
