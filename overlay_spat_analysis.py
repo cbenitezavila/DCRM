@@ -7,6 +7,16 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from shapely.geometry import box
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry.base import BaseGeometry
+
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
 logger = util.logger_init()
 
@@ -108,26 +118,72 @@ def count_overlapping_features(gdf) -> dict:
     return {'unary_union_area': df2, 'area_feature_count': intersected_gdf}
 
 
-def buffer_iteration(gdf)->dict:
-    '''
-    Iterates over the buffer and initializes the overlapping features count.
+def drop_z_dimension(geom):
+    """Drop the Z dimension of a geometry."""
+    
 
+    if not geom.has_z:
+        return geom
+    
+    def drop_z(coords):
+        return [(x, y) for x, y, z in coords]
+
+    if isinstance(geom, Polygon):
+        return Polygon(drop_z(geom.exterior.coords))
+    elif isinstance(geom, MultiPolygon):
+        return MultiPolygon([Polygon(drop_z(poly.exterior.coords)) for poly in geom.geoms])
+    else:
+        return geom
+
+
+
+def union_polygons(gdf) -> gpd.GeoDataFrame:
+    '''
+    Generates a GeoDataFrame of the union of polygons.
     gdf: gpd.GeoDataFrame, the GeoDataFrame to process
-
-    return: dict, the results of the buffer iteration with buffer as key
-    
+    return gpd.GeoDataFrame, the GeoDataFrame of the union of polygons 
     '''
-    res = {}
 
-    gdf_group = gdf.groupby('buffer')
+    # Generate a single multiline of all polygon boundaries
+    logger.info("Generating unary union of polygons...")
 
-    for buffer, group in tqdm(gdf_group, desc=f"Buffer Iteration"):
-        res[buffer] = count_overlapping_features(group)
-        break
+    gdf.geometry = gdf['geometry'].apply(drop_z_dimension)
 
-    return res
+    gdf = gdf.explode(ignore_index=True)
     
-def overlay_and_area_calc(grid, df):
+    logger.info("Calculating difference...")
+    diff = gpd.overlay(gdf, gdf, how='difference', keep_geom_type=False)
+    diff = diff[diff.geometry.type == 'Polygon']
+
+    # Calculate the intersections
+    logger.info("Calculating intersections...")
+    intersections = gpd.overlay(gdf, gdf, how='intersection', keep_geom_type=False)
+    intersections = intersections[intersections.geometry.type == 'Polygon']
+   
+    summup = pd.concat([diff, intersections], ignore_index=True)
+
+    return summup
+
+
+# def buffer_iteration(gdf)->dict:
+#     '''
+#     Iterates over the buffer and initializes the overlapping features count.
+
+#     gdf: gpd.GeoDataFrame, the GeoDataFrame to process
+
+#     return: dict, the results of the buffer iteration with buffer as key
+    
+#     '''
+#     res = {}
+
+#     gdf_group = gdf.groupby('buffer')
+
+#     for buffer, data in tqdm(gdf_group, desc=f"Buffer Iteration"):
+#         res[buffer] = union_polygons(data)
+#     return res
+
+    
+def overlay_and_area_calc(grid, df, m2_to_km2=10**-6)->gpd.GeoDataFrame:
     '''
     Overlays the grid with the data and calculates the area of the resulting polygons. Per initial grid cell
 
@@ -142,17 +198,19 @@ def overlay_and_area_calc(grid, df):
     logger.info("Overlaying the grid with the data...")
 
     assert grid.crs == df.crs, "CRS of the grid and data do not match"
-    overlay = gpd.overlay(grid, df, how='intersection')
+    overlay = gpd.overlay(grid, df, how='intersection', keep_geom_type=False)
 
     # Calculate the area of the resulting polygons
     logger.info("Calculating the area of the resulting polygons...")
-    overlay['area'] = overlay.geometry.area / 10**6  # Convert to km²
+    overlay['area'] = overlay.geometry.area * m2_to_km2  # Convert to km²
 
     overlay_g = overlay.groupby('id')['area'].sum()
 
     grid['area'] = grid['id'].map(overlay_g)
 
     grid['area'] = grid['area'].fillna(0) # Fill NaN values with 0 = no overlap in grid
+
+    grid['area'] = grid['area'].astype(float).round(1)
 
     logger.info("Finished overlay and area calculation")
 
@@ -168,41 +226,48 @@ def allocate_poly_to_grid(gdf, grid_resolution, plotting = True)->dict:
     grid_resolution: int, the resolution of the grid in degrees
     '''
 
-    res = buffer_iteration(gdf)
+
     grid = grid_shape_constructor(resolution = grid_resolution, crs_out=gdf.crs)
 
-    grid_collect = {}
+    gdf_group = gdf.groupby('buffer')
 
-    for buffer, data in res.items():
-        for key, value in data.items():
-                grid_collect[(buffer, key)] = overlay_and_area_calc(grid, value)
-                
-                if plotting: plot_grid(grid_collect[(buffer, key)], buffer, key)
+    grid_collect = gpd.GeoDataFrame()
 
-        break
-            
+    for buffer, data in tqdm(gdf_group, desc=f"Buffer Iteration") :
+        try:
+            logger.info(f"Processing buffer={buffer}km")
+                        
+            geom_union = union_polygons(data)
+
+            grid_allocated = overlay_and_area_calc(grid, geom_union)
+
+            grid_allocated['buffer'] = buffer
+
+            grid_collect = pd.concat([grid_collect, grid_allocated])
+        
+            if plotting: plot_grid(grid_allocated, buffer)
+
+        except Exception as e:
+            logger.error(f"Error processing buffer={buffer}km: {e}")
+
+    grid_collect.to_file(f'data/interm/overlay_allocated_to_grid.gpkg', driver='GPKG')
+
     return grid_collect
 
 
-def plot_grid(grid, buffer, key)->None:
+def plot_grid(grid, buffer)->None:
 
     '''
     Plots the grid with the area of the resulting polygons.
         
     grid: gpd.GeoDataFrame, the grid to plot
     buffer: int, the buffer value
-    key: int, the key value
+    
 
     return: None
     '''
 
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
-    from sklearn.preprocessing import StandardScaler
-    import seaborn as sns
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
+   
 
     logger.info("Plotting the grid with the area of the resulting polygons...")
 
@@ -212,7 +277,7 @@ def plot_grid(grid, buffer, key)->None:
     fig, ax = plt.subplots(figsize=(10, 6), subplot_kw={'projection': ccrs.Mollweide()})
     
     # Plot the GeoDataFrame
-    grid[grid.area != 0.0 ].plot(column='area', scheme='fisher_jenks', k=4, legend=True, cmap='magma', ax=ax, transform=ccrs.Mollweide(), legend_kwds={'fontsize': 8})
+    grid[grid['area'] > 0.0 ].plot(column='area', scheme='fisher_jenks', k=4, legend=True, cmap='magma', ax=ax, transform=ccrs.Mollweide(), legend_kwds={'fontsize': 8})
 
     # Add coastlines and land features
     ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
@@ -229,14 +294,14 @@ def plot_grid(grid, buffer, key)->None:
 
     legend = ax.get_legend()
     legend.set_bbox_to_anchor((1, 0.09))  # Move legend outside the plot
-    legend.set_title(f'Overlay Area (km²), buffer={buffer}, key = {key} km', prop={'size': 8})
+    legend.set_title(f'Overlay Area (km²), buffer={buffer}', prop={'size': 8})
 
     # Set extent to the entire globe
     ax.set_global()
 
     # Show the plot
     plt.tight_layout()  # Adjust layout to prevent overlap
-    plt.savefig(f"fig/Area_analysis_buffer={buffer}km,key={key}.png", bbox_inches='tight')  # Use bbox_inches='tight' to ensure the legend is not cut off
+    plt.savefig(f"fig/Area_analysis_buffer={buffer}km.png", bbox_inches='tight')  # Use bbox_inches='tight' to ensure the legend is not cut off
     
     logger.info("Finished plotting the grid with the area of the resulting polygons")
 
