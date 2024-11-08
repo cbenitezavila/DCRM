@@ -3,5 +3,7 @@ cache/
 legacy/
 fig/
 tabs/
-catche/
-catche_dir/
+cache/
+cache_dir/
+__pycache__/
+

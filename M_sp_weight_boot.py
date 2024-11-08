@@ -9,7 +9,6 @@ from copy import deepcopy
 import logging
 import os
 from joblib import Parallel, delayed, Memory
-import fiona
 import util
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,8 +46,10 @@ def snl_data_processing(snl_prod, mine_prop):
     #3. >90\% of the operations observations are coverd.
 
     vsnl_fin = vsnl_filter[vsnl_filter.development_stage.isin(['Operating', 'Expansion'])]
+
+    snl_non_zero = vsnl_fin[~(vsnl_fin.value == 0)]
     logger.info(f"Finish: Preprocessing")
-    return vsnl_fin
+    return snl_non_zero
 
 def development_type_table(snl_prod, mine_prop):
     data = snl_data_processing(snl_prod, mine_prop)
@@ -106,12 +107,13 @@ def share_calc(snl_prod, mine_prop):
     logger.info(f"Start: Share calculation")
     data = snl_data_processing(snl_prod, mine_prop)
 
+
     share = (data.groupby(['snl_id', 'year', 'commodity' ])
-              .agg({'value': 'sum'}).round(1)
+              .agg({'value': 'sum'}).round(5)
               .reset_index())
 
-    share['value_total'] = share.groupby(['snl_id', 'year'])['value'].transform('sum').round(2)
-    share['share'] = share['value'] / share['value_total'].round(2)
+    share['value_total'] = share.groupby(['snl_id', 'year'])['value'].transform('sum').round(5)
+    share['share'] = share['value'] / share['value_total'].round(5)
 
     logger.info(f"Finish: Share calculation")
     return share

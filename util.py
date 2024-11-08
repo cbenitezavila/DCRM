@@ -4,6 +4,7 @@ from joblib import Parallel, delayed, Memory
 import util
 import pandas as pd
 import geopandas as gpd
+import fiona
 
 
 # Set up joblib memory caching

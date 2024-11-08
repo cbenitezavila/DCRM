@@ -1,7 +1,7 @@
 import util
 import pandas as pd
 import numpy as np
-import com_compare
+import D_com_compare
 from tqdm import tqdm
 
 '''
@@ -17,20 +17,16 @@ class Commodity:
 
     _instances = []
     
-    def __init__(self, name, mine_id, buffer, area):
+    def __init__(self, name, mine_id, buffer, area, country):
         self.name = name
         self.mine_id = mine_id
         self.buffer_mine = buffer
         self.area_mine = area
+        self.country = country
         self.simple_weight = None
         self.conf_interval_weight = None
         self.conf_interval_error = None
-        self.simple_allocation_area = None
-        self.simple_allocation_error = None
-        self.weight_allocation_area = None
-        self.weight_allocation_error = None
-        self.score_allocation_area = None
-        self.score_allocation_error = None
+        self.method_eval = {}
         Commodity._instances.append(self)
 
         
@@ -54,23 +50,76 @@ class Commodity:
         except Exception as e:
             logger.error(f"Error adding confidence interval weight to Commodity {self.name}: {e}")
             raise
+    def calculate_allocation(self, method):
+                    
+            if method == 'simple':
+                try:
+                    
+                    self.get_simple_weight()
+                    
+                    assert self.simple_weight is not None, "simple_weight is not set"
 
-    def simple_allocation(self):
-        try:
-            
-            self.get_simple_weight()
-            
-            assert self.simple_weight is not None, "simple_weight is not set"
+                    value = self.area_mine * self.simple_weight
+                    error = value * area_error_par*self.simple_weight
+                
+                except AssertionError as ae:
+                    logger.error(f"AssertionError in simple_allocation for Commodity {self.name}: {ae}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in simple_allocation for Commodity {self.name}: {e}")
+                    raise
 
-            self.simple_allocation_area = self.area_mine * self.simple_weight
-            self.simple_allocation_error = self.simple_allocation_area * area_error_par*self.simple_weight
-           
-        except AssertionError as ae:
-            logger.error(f"AssertionError in simple_allocation for Commodity {self.name}: {ae}")
-            raise
-        except Exception as e:
-            logger.error(f"Error in simple_allocation for Commodity {self.name}: {e}")
-            raise
+            elif method == 'weight':
+                try:
+                    assert self.conf_interval_weight is not None, "conf_interval_weight is not set"
+                    assert self.area_mine is not None, "area_mine is empty"
+
+                    value = self.area_mine * self.conf_interval_weight
+                    area_error = area_error_par * self.area_mine  # Assuming area_error is std deviation of area_mine
+                    
+                    # error calculation -> propagation
+                    error = value * np.sqrt(
+                        (area_error/self.area_mine)**2 + 
+                        (self.conf_interval_error/self.conf_interval_weight)**2)
+        
+                except AssertionError as ae:
+                    logger.error(f"AssertionError in weight_allocation for Commodity {self.name}: {ae}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in weight_allocation for Commodity {self.name}: {e}")
+                    raise
+            
+            elif method == 'score':
+                try:
+                    assert self.conf_interval_weight is not None, "conf_interval_weight is not set"
+                    assert self.area_mine is not None, "area_mine is empty"
+                    
+                    list_com = self.get_mine().list_commodities # commodities of the mine
+                
+                    sum_weights = sum([self.get_commodity_same_mine(c).conf_interval_weight for c in list_com])
+                    b = self.conf_interval_weight / sum_weights
+                    value = self.area_mine * b
+
+                    # error calculation -> propagation
+
+                    error_sum = np.sqrt(sum([self.get_commodity_same_mine(c).conf_interval_error**2 for c in list_com]))
+                    error_b = b *np.sqrt((self.conf_interval_error/sum_weights)**2 + (error_sum/sum_weights)**2)
+                    error_area = area_error_par * self.area_mine
+                    error= value * np.sqrt((error_b/b)**2 + (error_area/self.area_mine)**2)
+
+        
+                except AssertionError as ae:
+                    logger.error(f"AssertionError in weight_allocation for Commodity {self.name}: {ae}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in weight_allocation for Commodity {self.name}: {e}")
+                    raise
+            
+            else:
+                raise ValueError(f"Method {method} is not valid")
+            return (value, error)
+            
+
 
     def get_simple_weight(self):
         try:
@@ -79,7 +128,7 @@ class Commodity:
 
             mine_instance = self.get_mine()
             self.simple_weight = 1/len(mine_instance.list_commodities)
-          
+        
         except AssertionError as ae:
             logger.error(f"AssertionError in get_simple_weight for Commodity {self.name}: {ae}")
             raise
@@ -87,53 +136,7 @@ class Commodity:
             logger.error(f"Error in get_simple_weight for Commodity {self.name}: {e}")
             raise
 
-    
-    def weight_allocation(self):
-        try:
-            assert self.conf_interval_weight is not None, "conf_interval_weight is not set"
-            assert self.area_mine is not None, "area_mine is empty"
-
-            self.weight_allocation_area = self.area_mine * self.conf_interval_weight
-            area_error = area_error_par * self.area_mine  # Assuming area_error is std deviation of area_mine
-            
-            # error calculation -> propagation
-            self.weight_allocation_error = self.weight_allocation_area * np.sqrt(
-                (area_error/self.area_mine)**2 + 
-                (self.conf_interval_error/self.conf_interval_weight)**2)
-      
-        except AssertionError as ae:
-            logger.error(f"AssertionError in weight_allocation for Commodity {self.name}: {ae}")
-            raise
-        except Exception as e:
-            logger.error(f"Error in weight_allocation for Commodity {self.name}: {e}")
-            raise
-
-    def score_allocation(self, common_commodities):
-        try:
-            assert self.conf_interval_weight is not None, "conf_interval_weight is not set"
-            assert self.area_mine is not None, "area_mine is empty"
-            
-            list_com = self.get_mine().list_commodities # commodities of the mine
-           
-            sum_weights = sum([self.get_commodity_same_mine(c).conf_interval_weight for c in list_com])
-            b = self.conf_interval_weight / sum_weights
-            self.score_allocation_area = self.area_mine * b
-
-            # error calculation -> propagation
-
-            error_sum = np.sqrt(sum([self.get_commodity_same_mine(c).conf_interval_error**2 for c in list_com]))
-            error_b = b *np.sqrt((self.conf_interval_error/sum_weights)**2 + (error_sum/sum_weights)**2)
-            error_area = area_error_par * self.area_mine
-            self.score_allocation_error = self.score_allocation_area * np.sqrt((error_b/b)**2 + (error_area/self.area_mine)**2)
-
         
-        except AssertionError as ae:
-            logger.error(f"AssertionError in weight_allocation for Commodity {self.name}: {ae}")
-            raise
-        except Exception as e:
-            logger.error(f"Error in weight_allocation for Commodity {self.name}: {e}")
-            raise
-
     def get_mine(self):
         return next((mine for mine in Mine.get_instances() if mine.id == self.mine_id and mine.buffer == self.buffer_mine), None)
     
@@ -144,10 +147,11 @@ class Commodity:
 
 class Mine:
     _instances = []
-    def __init__(self, id, buffer):  
+    def __init__(self, id, buffer, country):  
         self.id = id
         self.buffer = buffer 
         self.area = None
+        self.country = country
         self.list_commodities = []
         Mine._instances.append(self)
 
@@ -186,7 +190,7 @@ def initialize_mines(df, compare):
             if row['list_of_commodities'] is None:
                 continue  # Skip mines with no commodities allocated
 
-            mine = Mine(id=row['ID'], buffer=row['buffer'])
+            mine = Mine(id=row['ID'], buffer=row['buffer'] , country=row['adm0_a3'])
             mine.init_area(row['overlay_area'], row['max_buffered_area'])
             mine.init_commodities(str_to_list_com_com(row['list_of_commodities'], compare))
             mine_counter += 1  # Increment the counter for each initialized mine
@@ -210,8 +214,10 @@ def get_common_commodities(compare):
 def initialize_commodities(overlay, snl, compare):
     logger.info('Initializing Commodities')
 
-    snl['conf_interval_weight'] = snl['conf_upper_bound'] - snl['conf_lower_bound']
-    snl['conf_interval_error'] = snl['conf_length'] / 2
+    snl['conf_interval_weight'] = (snl['conf_upper_bound'] + snl['conf_lower_bound']) / 2 # center of the confidence interval
+    snl['conf_interval_error'] = snl['conf_length'] / 2 # half of the confidence interval length as error
+
+
 
     common_commodities = get_common_commodities(compare)
     logger.debug(f"Common commodities count: {len(common_commodities)}")
@@ -235,16 +241,15 @@ def initialize_commodities(overlay, snl, compare):
                 if c not in m.list_commodities:
                     continue  # Skip if the commodity isn't in the mine's list of commodities
 
-                com = Commodity(name=c, mine_id=m.id, buffer=m.buffer, area=m.area)
+                com = Commodity(name=c, mine_id=m.id, buffer=m.buffer, area=m.area, country=m.country)
                 # Use the pre-filtered data for commodity 'c' instead of filtering every time
                 com.conf_interval_weight = snl_group['conf_interval_weight'].mean()
                 com.conf_interval_error = snl_group['conf_interval_error'].mean()
         
         for com in tqdm(Commodity.get_instances(), desc="Calculating Allocation Scenarios"): 
-            if com.name in prio_commodities:    
-                com.simple_allocation()
-                com.weight_allocation()
-                com.score_allocation(common_commodities)
+            if com.name in prio_commodities:
+                for method in methods_to_evaluate:
+                    com.method_eval[method] = com.calculate_allocation(method = method)
                    
 
     except Exception as e:
@@ -262,22 +267,21 @@ def commodity_instances_to_df(overlay, snl, compare):
         data = []
         for c in Commodity.get_instances():
             if c.name in prio_commodities:
-                row = {
-                    'Commodity': c.name,
-                    'Mine_ID': c.mine_id,
-                    'Buffer': c.buffer_mine,
-                    'Area': c.area_mine,
-                    'Simple_Weight': c.simple_weight,
-                    'Conf_Interval_Weight': c.conf_interval_weight,
-                    'Conf_Interval_Error': c.conf_interval_error,
-                    'Simple_Allocation_Area': c.simple_allocation_area,
-                    'Simple_Allocation_Error': c.simple_allocation_error,
-                    'Weight_Allocation_Area': c.weight_allocation_area,
-                    'Weight_Allocation_Error': c.weight_allocation_error,
-                    'Score_Allocation_Area': c.score_allocation_area,
-                    'Score_Allocation_Error': c.score_allocation_error
-                }
-                data.append(row)
+                for m in methods_to_evaluate:
+                        row = {
+                            'Commodity': c.name,
+                            'Mine_ID': c.mine_id,
+                            'Buffer': c.buffer_mine,
+                            'Area': c.area_mine,
+                            'Country': c.country,
+                            'Simple_Weight': c.simple_weight,
+                            'Conf_Interval_Weight': c.conf_interval_weight,
+                            'Conf_Interval_Error': c.conf_interval_error,
+                            'Allocation_Method': m,
+                            'Value': c.method_eval[m][0],
+                            'Error': c.method_eval[m][1]
+                        }
+                        data.append(row)
 
         df = pd.DataFrame(data)  # Move DataFrame creation outside the loop
 
@@ -295,15 +299,22 @@ def commodity_instances_to_df(overlay, snl, compare):
 if __name__ == '__main__':
     area_error_par = .01
     buffer = 0
-    prio_commodities = ["Copper"]
+    
+    methods_to_evaluate = ['simple', 'weight', 'score']
 
     snl_weights_path = 'data/interm/snl_boot.csv'
     compare_path = 'data/interm/commodity_consistency_check.csv'
     mine_indig_path = 'data/interm/mine_indig_footprint_corrected.gpkg'
 
-    snl_weights = util.load_csv(snl_weights_path, logger=logger)
+    map_table_path = 'data/interm/mapping_table.csv'
+    
+
+    snl_weights = pd.read_csv(snl_weights_path)
     mine_indig = util.load_gpd(mine_indig_path, logger=logger)
     compare = util.load_csv(compare_path, logger=logger)
+    map_table = pd.read_csv(map_table_path)
+
+    prio_commodities = map_table['SNL_commodity'].dropna().unique().tolist()
 
     
 
