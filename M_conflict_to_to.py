@@ -4,7 +4,6 @@ import geopandas as gpd
 from shapely.geometry import Point
 from shapely import hausdorff_distance
 from joblib import Parallel, delayed, Memory
-import fiona
 import logging
 import os
 
@@ -33,9 +32,8 @@ def load_conflict_data(filepath):
 @memory.cache
 def load_overlay_data(filepath):
     logger.info("Loading overlay data...")
-    with fiona.open(filepath) as src:
-        crs = src.crs
-        gdf = gpd.GeoDataFrame.from_features(src, crs=crs)
+    # Directly read the file using GeoPandas
+    gdf = gpd.read_file(filepath, driver='GPKG', engine = 'pyogrio')
     return gdf
 
 def conflict_processing(cf, columns_of_interest):
@@ -44,7 +42,7 @@ def conflict_processing(cf, columns_of_interest):
         # Clean and filter the data
         cf['End Date'] = pd.to_datetime(cf['End Date'], errors='coerce', dayfirst=True)
         cf['Start Date'] = pd.to_datetime(cf['Start Date'], errors='coerce', dayfirst=True)
-        cf['duration'] = cf['End Date'] - cf['Start Date']
+        cf['duration'] = (cf['End Date'] - cf['Start Date']).dt.days
 
         mask = cf[columns_of_interest].eq(1).any(axis=1)
         cf_filtered = cf.loc[mask]
@@ -77,26 +75,36 @@ def row_hausdorff_distance(row, conflict_pre):
         logger.error(f"Error in row_hausdorff_distance: {e}")
         return np.nan
 
-def haus_distance(conflict, columns_of_interest, overlay):
+def cent_distance_iter(conflict, columns_of_interest, overlay, target_crs='EPSG:3395'):
     try:
-        logger.info("Starting haus_distance calculation...")
+        logger.info("Starting centroid calculation...")
         join = join_conflict_overlay(conflict, columns_of_interest, overlay)
         conflict_pre = conflict_processing(conflict, columns_of_interest)
-        conflict_pre.to_crs(join.crs, inplace=True)
+        conflict_pre.to_crs(target_crs, inplace=True)
+        join.to_crs(target_crs, inplace=True)
         assert conflict_pre.crs == join.crs, f"CRS mismatch between conflict and join data."
         results = Parallel(n_jobs=-1)(
-            delayed(row_hausdorff_distance)(row, conflict_pre) for _, row in join.iterrows()
+            delayed(centroid_distance)(row, conflict_pre) for _, row in join.iterrows()
         )
 
-        join['hausdorff_distance'] = results
+        join['centroid_distance'] = results
 
-        join['inv_hausdorff_distance'] = 1/join['hausdorff_distance']
+        join['inv_centroid_distance'] = 1/join['centroid_distance']
         
-        logger.info("Completed haus_distance calculation.")
+        logger.info("Completed centroid calculation.")
         return join
     except Exception as e:
         logger.error(f"Error in haus_distance: {e}")
         return None
+    
+def centroid_distance(row, conflict_pre):
+    try:
+        polygon = row['geometry'].centroid
+        point = conflict_pre.loc[row['Conflict Id']]['geometry']
+        return polygon.distance(point)
+    except Exception as e:
+        logger.error(f"Error in centroid_distance: {e}")
+        return np.nan
 
 def join_conflict_overlay(conflict, columns_of_interest, overlays):
     try:
@@ -106,7 +114,7 @@ def join_conflict_overlay(conflict, columns_of_interest, overlays):
         c_pro.to_crs(overlays.crs, inplace=True)
 
         assert c_pro.crs == overlays.crs, f"CRS mismatch between conflict and overlay data."
-        cjoin = gpd.sjoin(overlays, c_pro, how='inner', op='intersects')
+        cjoin = gpd.sjoin(overlays, c_pro, how='inner')
         cjoin.rename(columns={'index_right': 'Conflict_ID', 'ID': 'Mine_ID'}, inplace=True)
         
         logger.info("Completed join_conflict_overlay.")
@@ -115,13 +123,17 @@ def join_conflict_overlay(conflict, columns_of_interest, overlays):
         logger.error(f"Error in join_conflict_overlay: {e}")
         return None
 
+
+
+
 if __name__ == '__main__':
     try:
         logger.info("Starting data loading...")
 
-        conflict_filepath = 'DCRM/data/EJAtlas_dataset_V1_2024-01.xlsx'
-        overlay_filepath = 'DCRM/data/interm/mine_indig_footprint_corrected.gpkg'
-        
+        conflict_filepath = r'data/EJAtlas_dataset_V1_2024-01.xlsx'
+        overlay_filepath = r'data/interm/mine_indig_footprint_corrected.gpkg'
+        output_filepath = r'data/interm/conflict_to_alloc.gpkg'
+
         # Load the conflict data
         cf = load_conflict_data(conflict_filepath)
         logger.info('Conflict data loaded.')
@@ -139,23 +151,17 @@ if __name__ == '__main__':
         logger.info('Overlay data loaded.')
 
         # Calculate the Hausdorff distance
-        join_haus = haus_distance(cf, col_int, mines)
+        with_distance = cent_distance_iter(cf, col_int, mines)
+
         
-        if join_haus is not None:
-            logger.info('Hausdorff distance calculation completed.')
-            print(join_haus.head())
-
-            output_filepath = 'DCRM/data/interm/conflict_mine_overlay_dist.gpkg'
-
-            
+        if with_distance is not None:
+  
             logging.info(f"Writing output to {output_filepath}")
 
-            with fiona.open(output_filepath, 'w', driver='GPKG', crs=join_haus.crs) as dst:
-                for feature in join_haus.iterfeatures():
-                    dst.write(feature)
+            with_distance.to_file(output_filepath, driver='GPKG')
             logging.info(f"Output written to {output_filepath}")
         else:
-            logger.error('Hausdorff distance calculation failed.')
+            logger.error('Conflict alloc failed.')
 
     except Exception as e:
         logger.error(f"Error in main block: {e}")
