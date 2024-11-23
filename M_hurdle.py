@@ -5,8 +5,10 @@ import geopandas as gpd
 from util import save_fig_plotnine
 
 from plotnine import *
-
+import pandas as pd
 from tqdm import tqdm 
+from joblib import Parallel, delayed
+
 
 def weighted_sum(alloc, mines):
     sum_per_conflict = alloc.groupby(['Conflict Id', 'buffer'])['inv_centroid_distance'].sum().reset_index()
@@ -22,58 +24,78 @@ def weighted_sum(alloc, mines):
     return mines
 
 
-def reallocate_area(df):
-    '''
-    Efficiently calculate the overlap between the mine polygons in each buffer and distribute the overlapping area 
-    equally among the mines that share the overlap.
-    '''
-    df['area_correction'] = 0  # Initialize the area correction column
+def process_combination(df, b, c, epsg):
+    """
+    Process a single buffer and country combination to calculate corrected overlap areas.
+    """
+    try:
+        df.to_crs(epsg=epsg, inplace=True)
+        df['Territorial_overlap'] = df['geometry'].area * 10**-6  # Convert to km2
+
+        # Subset data for the current buffer and country
+        df_b = df[(df['buffer'] == b) & (df['admin'] == c)]
+
+        if df_b.empty or len(df_b) < 2:
+            return None  # Skip if there are no overlaps or insufficient data
+
+        # Compute pairwise intersections
+        overlaps = gpd.overlay(df_b, df_b, how='intersection')
+        
+        # Filter out self-overlaps
+        overlaps = overlaps[overlaps['Mine_ID_1'] != overlaps['Mine_ID_2']]
+
+        if overlaps.empty:
+            return None # There are no overlaps in this buffer, country
+
+        
+        overlaps['Overlap_area'] = overlaps.geometry.area * 10**-6  # Convert to km2
+
+        # Calculate single share
+        single_share = overlaps.groupby('Mine_ID_1').apply(
+            lambda x: 1 - (x['Overlap_area'].sum() / (2 * x['Territorial_overlap_1'].sum()))
+        ).reset_index()
+
+        single_share.rename(columns={'Mine_ID_1': 'Mine_ID', 0: 'Single_share'}, inplace=True)
+
+        if any(single_share['Single_share'] < 0):
+            raise ValueError('Negative share detected')
+
+        # Merge back to original dataframe and calculate corrected overlap
+        df_b = df_b.merge(single_share, on='Mine_ID', how='left')
+        df_b['Territorial_overlap_corrected'] = df_b['Territorial_overlap'] * df_b['Single_share']
+
+        # Select the required columns
+        return df_b[['Mine_ID', 'admin', 'buffer', 'mine_area', 'max_buffered_area', 'Territorial_overlap', 'Territorial_overlap_corrected']]
     
-    # Process each buffer separately
-    for b in tqdm(df['buffer'].unique()[1:], desc='Buffers'):
+    except Exception as e:
+        print(f"Error in buffer {b}, admin {c}: {e}")
+        return None
 
-        try: 
-            df_b = df[df['buffer'] == b][100:]
-            
-            # Compute all pairwise intersections within the buffer at once
-            # Step 1: Calculate all pairwise intersections for the entire dataset at once
-            overlaps = gpd.overlay(df_b, df_b, how='intersection')
+def reallocate_area(df, epsg='8857'):
+    """
+    Efficiently calculate the overlap between the mine polygons in each buffer and distribute the overlapping area
+    equally among the mines that share the overlap, using parallel processing.
+    """
+    # Initialize the area correction column
+    df.to_crs(epsg=epsg, inplace=True)
+    df['Territorial_overlap'] = df['geometry'].area * 10**-6  # Convert to km2
 
-            # Step 2: Remove self-overlaps by filtering out pairs with identical Mine_IDs
-            overlaps = overlaps[overlaps['Mine_ID_1'] != overlaps['Mine_ID_2']]
+    # Process each buffer and country combination in parallel
+    unique_combinations = df[df['buffer'] > 0][['buffer', 'admin']].drop_duplicates()
 
-            # Step 3: Assign a unique ID to each overlap geometry
-            overlaps['overlap_id'] = overlaps['geometry'].apply(lambda x: hash(x.wkb))
+    # Parallelize the processing of each unique combination
+    results = Parallel(n_jobs=-1, backend='threading')(
+        delayed(process_combination)(df, b, c, epsg) for _, (b, c) in tqdm(unique_combinations.iterrows(), total=len(unique_combinations), desc='Processing combinations')
+    )
 
-            # Step 4: Calculate overlap area and group by overlap_id
-            overlaps['overlap_area'] = overlaps.geometry.area
-            overlap_summary = (overlaps.groupby('overlap_id')
-                            .agg(total_overlap_area=('overlap_area', 'sum'),
-                                    num_overlaps=('Mine_ID_1', 'nunique'))
-                            .reset_index())
+    #buffer_zero = df[df['buffer'] == 0][['Mine_ID', 'admin', 'buffer', 'mine_area', 'max_buffered_area', 'Territorial_overlap']]
+    #buffer_zero = buffer_zero.assign(Territorial_overlap_corrected = buffer_zero['Territorial_overlap'])
+    # Combine results
+    res_df = pd.concat([r for r in results if r is not None], axis=0)
+    #res_df = pd.concat([res_df, buffer_zero], axis=0)
+    res_df.to_csv('data/interm/corrected_overlap_area.csv', index=False)
 
-            # Step 5: Merge back with original overlaps to distribute overlap areas
-            area_correction = overlaps.merge(overlap_summary, on='overlap_id')
-            area_correction['distributed_area'] = area_correction['total_overlap_area'] / area_correction['num_overlaps']
-
-            # Step 6: Sum the distributed area for each mine
-            area_correction_sum = (area_correction.groupby('Mine_ID_1')
-                                .agg(area_correction=('distributed_area', 'sum'))
-                                .reset_index())
-
-             # Update the area_correction column in the original dataframe for the current buffer
-            df.loc[df['buffer'] == b, 'area_correction'] = (
-                df[df['buffer'] == b].merge(area_correction_sum, 
-                                            left_on='Mine_ID', 
-                                            right_on='Mine_ID_1', 
-                                            how='left')['area_correction_y']
-                .fillna(0)
-            )
-            
-        except:
-            raise ValueError('Error in buffer {}'.format(b))
-    
-    return df
+    return res_df
 
 
 def logistic_model(df):
