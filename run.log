@@ -1,5 +1,0 @@
-2026-04-13 11:54:58,986 - INFO - Spatial join complete: 24,139 mine–indig pairs, 8 workers
-2026-04-13 11:54:58,986 - INFO - Buffer 0 m — start
-2026-04-13 12:00:27,183 - INFO - Created 24,139 records
-2026-04-13 12:00:27,244 - INFO - Buffer 0 m — done  rows=24,139  time=5.47 min
-2026-04-13 12:00:27,245 - INFO - All buffers processed.
