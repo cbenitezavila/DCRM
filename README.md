@@ -15,26 +15,27 @@ Variable naming: no units in name, no spaces, first letter capitalised (e.g. `Pr
 
 ```
 DCRM/
-├── util.py                  # shared helpers (logging, joblib caching)
-├── overlap_calc.py          # model: mine–indig geometric intersection
-├── commodity_alloc.py       # model: per-commodity area allocation
-├── conflict_to_overlap.py   # model: conflict–mine proximity (Hausdorff)
-├── dataset_specs.py         # exploration: dataset summary statistics
-├── com_compare.py           # exploration: commodity cross-dataset comparison
-├── spatial_plot.py          # analysis: spatial & distributional figures → fig/spatial/
-├── share_calc_plot.py       # analysis: overlap share figures → fig/share/
-├── overlap_dist.py          # analysis: overlap size distribution figures
-├── overlap_map.py           # analysis: interactive Folium map → fig/overlap_map.html
-├── data/                    # input datasets and intermediate outputs
-│   └── interm/over_calc/    # intermediate: over_buffer_*.gpkg, over_com_buffer_*.gpkg
-├── fig/                     # all output figures
+├── scripts/
+│   ├── util.py                  # shared helpers (logging, joblib caching)
+│   ├── overlap_calc.py          # model: mine–indig geometric intersection
+│   ├── commodity_alloc.py       # model: per-commodity area allocation
+│   ├── conflict_to_overlap.py   # model: conflict–mine proximity (Hausdorff)
+│   ├── dataset_specs.py         # exploration: dataset summary statistics
+│   ├── com_compare.py           # exploration: commodity cross-dataset comparison
+│   ├── spatial_plot.py          # analysis: spatial & distributional figures → fig/spatial/
+│   ├── share_calc_plot.py       # analysis: overlap share figures → fig/share/
+│   ├── overlap_dist.py          # analysis: overlap size distribution figures
+│   └── overlap_map.py           # analysis: interactive Folium map → fig/overlap_map.html
+├── data/                        # input datasets and intermediate outputs
+│   └── interm/over_calc/        # intermediate: over_buffer_*.gpkg, over_com_buffer_*.gpkg
+├── fig/                         # all output figures
 │   ├── spatial/
 │   └── share/
-├── legacy/                  # earlier scripts, kept for reference
-└── orga/                    # project organisation docs, literature, presentations
+├── legacy/                      # earlier scripts, kept for reference
+└── orga/                        # project organisation docs, literature, presentations
 ```
 
-All scripts are run from the project root, e.g. `python overlap_calc.py`.
+All scripts are run from the project root, e.g. `python scripts/overlap_calc.py`.
 
 ---
 
