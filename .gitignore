@@ -9,3 +9,4 @@ cache_dir/
 __pycache__/
 orga/
 __pycache__/util.cpython-311.pyc
+run.log
